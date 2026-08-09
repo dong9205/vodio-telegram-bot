@@ -48,6 +48,7 @@ type MTProtoConfig struct {
 	Password    string
 	SessionFile string
 	InboxChatID int64
+	ProxyURL    string
 }
 
 type DashboardConfig struct {
@@ -230,6 +231,11 @@ func parseMTProtoConfig() (MTProtoConfig, error) {
 		}
 	}
 
+	proxyURL, err := parseMTProxyURL()
+	if err != nil {
+		return MTProtoConfig{}, err
+	}
+
 	return MTProtoConfig{
 		Enabled:     true,
 		AppID:       appID,
@@ -238,7 +244,38 @@ func parseMTProtoConfig() (MTProtoConfig, error) {
 		Password:    strings.TrimSpace(os.Getenv("MT_PASSWORD")),
 		SessionFile: sessionFile,
 		InboxChatID: chatID,
+		ProxyURL:    proxyURL,
 	}, nil
+}
+
+func parseMTProxyURL() (string, error) {
+	raw := strings.TrimSpace(os.Getenv("MT_PROXY_URL"))
+	if raw == "" {
+		return "", nil
+	}
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid MT_PROXY_URL: %w", err)
+	}
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	if parsed.Scheme != "socks5" && parsed.Scheme != "socks5h" {
+		return "", fmt.Errorf("MT_PROXY_URL must use socks5 or socks5h scheme")
+	}
+	if parsed.Hostname() == "" {
+		return "", fmt.Errorf("MT_PROXY_URL must include a host")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", fmt.Errorf("MT_PROXY_URL must not include a path")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("MT_PROXY_URL must not include a query or fragment")
+	}
+	if parsed.User != nil && parsed.User.Username() == "" {
+		return "", fmt.Errorf("MT_PROXY_URL username must not be empty")
+	}
+
+	return parsed.String(), nil
 }
 
 func boolEnv(key string, defaultValue bool) bool {

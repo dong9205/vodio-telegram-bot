@@ -214,6 +214,28 @@ func TestDownloadTrackerRecordsTransferMetrics(t *testing.T) {
 	}
 }
 
+func TestDownloadTrackerRecordsProxyConnectionMetrics(t *testing.T) {
+	tasks, err := taskstore.New(filepath.Join(t.TempDir(), "tasks.json"))
+	if err != nil {
+		t.Fatalf("create task store: %v", err)
+	}
+	if err := tasks.Create(taskstore.Task{ID: "task-proxy", Status: taskstore.StatusDownloading}, nil); err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	archiver := &Archiver{
+		cfg:    config.MTProtoConfig{ProxyURL: "socks5://proxy.internal:7890"},
+		tasks:  tasks,
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	newDownloadTracker(archiver, "task-proxy", 1024)
+
+	task := tasks.List()[0]
+	if !task.MTProtoProxyEnabled || task.ConnectionMode != mtprotoProxyMode {
+		t.Fatalf("proxy connection metrics = %#v", task)
+	}
+}
+
 func TestNotifyDownloadCompleteIncludesRemainingVideoQueue(t *testing.T) {
 	tasks, err := taskstore.New(filepath.Join(t.TempDir(), "tasks.json"))
 	if err != nil {

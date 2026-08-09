@@ -50,6 +50,7 @@ const mtprotoDownloadPartSize = 512 * 1024
 const (
 	mtprotoDataCenterLabel = "DC 2（主连接，媒体自动路由）"
 	mtprotoConnectionMode  = "MTProto 直连"
+	mtprotoProxyMode       = "MTProto SOCKS5 代理"
 	mtprotoDownloadThreads = 1
 )
 
@@ -109,7 +110,10 @@ func newDownloadTracker(archiver *Archiver, taskID string, totalBytes int64) *do
 	zeroSpeed := float64(0)
 	dataCenter := mtprotoDataCenterLabel
 	connectionMode := mtprotoConnectionMode
-	proxyEnabled := false
+	proxyEnabled := archiver.cfg.ProxyURL != ""
+	if proxyEnabled {
+		connectionMode = mtprotoProxyMode
+	}
 	threads := mtprotoDownloadThreads
 	archiver.updateTask(taskID, taskstore.Update{
 		TotalBytes:              &totalBytes,
@@ -255,6 +259,15 @@ func (a *Archiver) Run(ctx context.Context) error {
 	opts := gotdtelegram.Options{
 		SessionStorage: &session.FileStorage{Path: a.cfg.SessionFile},
 		UpdateHandler:  dispatcher,
+	}
+	if a.cfg.ProxyURL != "" {
+		resolver, err := newMTProtoProxyResolver(a.cfg.ProxyURL)
+		if err != nil {
+			return err
+		}
+		opts.Resolver = resolver
+		scheme, address := mtProtoProxyDescription(a.cfg.ProxyURL)
+		a.logger.Info("MTProto proxy enabled", "scheme", scheme, "address", address)
 	}
 	client := gotdtelegram.NewClient(a.cfg.AppID, a.cfg.AppHash, opts)
 	raw := tg.NewClient(client)

@@ -125,6 +125,8 @@ MT_PHONE=+8613800000000
 # MT_PASSWORD=replace-with-your-2fa-password
 MT_INBOX_CHAT_ID=-1001234567890
 MT_SESSION_FILE=/data/telegram-session/session.json
+# 可选：让 MTProto 登录、监听和媒体下载使用 SOCKS5 代理
+# MT_PROXY_URL=socks5://192.168.1.10:7890
 
 STORAGE_ROOT=/data/telegram-videos
 
@@ -137,7 +139,7 @@ OPENAI_API_KEY=sk-replace-with-your-api-key
 # OPENAI_BASE_URL=https://api.openai.com/v1
 # AI_MODEL=gpt-4o-mini
 
-# 可选：仅作用于 Bot API、Bot 文件下载和 AI 请求
+# 可选：仅作用于 Bot API、Bot 文件下载和 AI 请求，不作用于 MTProto
 # HTTP_PROXY_URL=http://127.0.0.1:7890
 ```
 
@@ -310,6 +312,7 @@ Telegram 不允许 Bot 主动私聊从未启动过它的用户。`ALLOWED_USER_I
 | `MT_PASSWORD` | 空 | Telegram 两步验证密码 |
 | `MT_SESSION_FILE` | `data/telegram-session/session.json` | 登录 Session 文件，必须持久化并保密 |
 | `MT_INBOX_CHAT_ID` | `0` | 监听目标；支持正数 `peer_id` 或负数 Bot API chat ID；`0` 为发现模式 |
+| `MT_PROXY_URL` | 空 | MTProto SOCKS5 代理；支持 `socks5://`、`socks5h://` 及可选用户名/密码 |
 
 ### 存储、AI、Web 与网络
 
@@ -325,7 +328,17 @@ Telegram 不允许 Bot 主动私聊从未启动过它的用户。`ALLOWED_USER_I
 | `DASHBOARD_STATE_FILE` | `STORAGE_ROOT/.dashboard/tasks.json` | 任务历史和私密重试数据 |
 | `HTTP_PROXY_URL` | 空 | Bot API、Bot 文件下载和 AI 请求使用的 HTTP/HTTPS 代理 |
 
-未设置 `HTTP_PROXY_URL` 时，Go HTTP 客户端仍会遵循标准的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`。MTProto 媒体下载当前不会使用这些 HTTP 代理。
+未设置 `HTTP_PROXY_URL` 时，Go HTTP 客户端仍会遵循标准的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY`。MTProto 不使用这些 HTTP 代理；如需代理 MTProto，请单独设置 `MT_PROXY_URL`：
+
+```env
+# 无认证；未写端口时默认为 1080
+MT_PROXY_URL=socks5://192.168.1.10:7890
+
+# 用户名/密码认证（特殊字符需要 URL 编码）
+# MT_PROXY_URL=socks5://username:password@192.168.1.10:7890
+```
+
+代理地址必须能从容器内部访问。容器中的 `127.0.0.1` 指向容器自身，不是 Docker 主机。启用成功后日志会出现 `MTProto proxy enabled`，且不会记录代理密码。
 
 ## 本地运行与开发
 
@@ -385,7 +398,7 @@ go test -p 1 ./...
 ### 下载很慢
 
 - 单个 MTProto 文件当前使用单路串行下载，程序同时最多处理两个归档任务；
-- MTProto 媒体下载为直连，不使用 `HTTP_PROXY_URL`；
+- MTProto 不使用 `HTTP_PROXY_URL`；需要代理时设置 `MT_PROXY_URL`，登录、监听和媒体下载会统一走 SOCKS5；
 - 用同一机器上的 Telegram Desktop 下载同一文件，可帮助判断是否为网络路由问题；
 - `FLOOD_PREMIUM_WAIT` 表示 Telegram 账号侧触发限制；
 - `engine forcibly closed: context canceled` 通常表示程序或 MTProto 引擎被关闭。
@@ -431,7 +444,7 @@ go test -p 1 ./...
 
 - 不扫描历史消息，只处理程序运行期间收到的新消息；
 - 单个 MTProto 文件为单路下载；
-- MTProto 媒体当前直连 Telegram，不使用 HTTP 代理；
+- MTProto 不支持普通 HTTP 代理或 Telegram MTProxy，目前仅支持通过 `MT_PROXY_URL` 配置 SOCKS5；
 - 断点续传只适用于新版本创建并保留 `.part` 文件的任务；
 - AI 只分析文本元数据，不分析图片、视频画面或音频；
 - Web 页面没有账号登录；
