@@ -1,0 +1,17 @@
+.env
+.env.*
+!.env.example
+.cursor/
+
+data/
+bin/
+dist/
+tmp/
+.gocache/
+
+*.exe
+*.test
+*.out
+
+.DS_Store
+Thumbs.db

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Telegram 归档预览</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="app-shell">
+    <aside class="sidebar">
+      <header class="sidebar-header">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true">V</div>
+          <div>
+            <p class="eyebrow">VODIO ARCHIVE</p>
+            <h1>归档预览</h1>
+          </div>
+          <div class="connection" title="Dashboard 连接状态">
+            <span class="connection-dot"></span>
+            <span id="connectionText">连接中</span>
+          </div>
+        </div>
+        <label class="search">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input id="searchInput" type="search" placeholder="搜索分类、标题、描述或文件" autocomplete="off">
+        </label>
+        <div class="filters" aria-label="归档筛选">
+          <button class="filter active" data-filter="all">全部 <span id="countAll">0</span></button>
+          <button class="filter" data-filter="active">进行中 <span id="countActive">0</span></button>
+          <button class="filter" data-filter="succeeded">已保存 <span id="countSucceeded">0</span></button>
+          <button class="filter" data-filter="failed">失败 <span id="countFailed">0</span></button>
+        </div>
+      </header>
+      <section id="taskList" class="chat-list" aria-live="polite"></section>
+      <footer class="sidebar-footer">
+        <span id="lastUpdated">尚未同步</span>
+        <span id="bandwidth">0 B/s</span>
+      </footer>
+    </aside>
+
+    <section class="conversation" aria-label="Telegram 风格归档预览">
+      <header id="conversationHeader" class="conversation-header">
+        <div class="avatar" aria-hidden="true">TG</div>
+        <div class="conversation-title">
+          <strong>选择一个分类</strong>
+          <span>分类中的每个归档目录会显示为一条消息</span>
+        </div>
+        <span id="headerStatus" class="status-pill">等待选择</span>
+      </header>
+      <div id="messageStage" class="message-stage">
+        <div class="welcome">
+          <div class="welcome-icon" aria-hidden="true">✦</div>
+          <h2>按分类浏览归档</h2>
+          <p>从左侧选择一个分类；该分类下的每个归档目录都是一条 Telegram 风格消息。</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <template id="emptyTemplate">
+    <div class="empty-list">
+      <strong>还没有符合条件的分类</strong>
+      <span>发送媒体给 Telegram Bot 后，它会出现在这里。</span>
+    </div>
+  </template>
+  <script src="/app.js" defer></script>
+</body>
+</html>

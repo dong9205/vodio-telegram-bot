@@ -1,0 +1,16 @@
+services:
+  tg-video-archiver:
+    build: .
+    container_name: tg-video-archiver
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STORAGE_ROOT: /data/telegram-videos
+      MT_SESSION_FILE: /data/telegram-session/session.json
+      DASHBOARD_ADDR: 0.0.0.0:9090
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./data/telegram-videos:/data/telegram-videos
+      - ./data/telegram-session:/data/telegram-session

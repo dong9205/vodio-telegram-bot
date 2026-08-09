@@ -1,0 +1,12 @@
+.git
+.cursor
+.env
+.env.*
+!.env.example
+data
+bin
+dist
+tmp
+*.exe
+*.test
+*.out
