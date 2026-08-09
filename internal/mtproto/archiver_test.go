@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/gotd/td/tg"
+	"github.com/gotd/td/tgerr"
 
 	"vodio-telegram-bot/internal/config"
 	"vodio-telegram-bot/internal/notification"
@@ -143,13 +144,14 @@ func TestMatchesInboxChatID(t *testing.T) {
 func TestArchivePayloadRoundTrip(t *testing.T) {
 	items := []archiveItem{
 		{
-			messageID: 45,
-			peerID:    5267891219,
-			peerType:  "chat",
-			kind:      "video",
-			fileName:  "example.mp4",
-			mimeType:  "video/mp4",
-			fileSize:  1024,
+			messageID:      45,
+			peerID:         5267891219,
+			peerType:       "channel",
+			peerAccessHash: 123456,
+			kind:           "video",
+			fileName:       "example.mp4",
+			mimeType:       "video/mp4",
+			fileSize:       1024,
 			location: &tg.InputDocumentFileLocation{
 				ID:            99,
 				AccessHash:    100,
@@ -166,7 +168,7 @@ func TestArchivePayloadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decodeArchivePayload returned error: %v", err)
 	}
-	if len(got) != 1 || got[0].fileName != "example.mp4" || got[0].fileSize != 1024 {
+	if len(got) != 1 || got[0].fileName != "example.mp4" || got[0].fileSize != 1024 || got[0].peerAccessHash != 123456 {
 		t.Fatalf("round-tripped items = %#v", got)
 	}
 	location, ok := got[0].location.(*tg.InputDocumentFileLocation)
@@ -175,6 +177,81 @@ func TestArchivePayloadRoundTrip(t *testing.T) {
 	}
 	if location.ID != 99 || location.AccessHash != 100 || !bytes.Equal(location.FileReference, []byte{1, 2, 3}) {
 		t.Fatalf("round-tripped location = %#v", location)
+	}
+}
+
+func TestDownloadMTProtoFileRefreshesExpiredReferenceAtSameOffset(t *testing.T) {
+	const resumeOffset = int64(484442112)
+	oldLocation := &tg.InputDocumentFileLocation{
+		ID:            99,
+		AccessHash:    100,
+		FileReference: []byte("expired"),
+	}
+	newLocation := &tg.InputDocumentFileLocation{
+		ID:            99,
+		AccessHash:    100,
+		FileReference: []byte("fresh"),
+	}
+
+	getCalls := 0
+	getFile := func(_ context.Context, request *tg.UploadGetFileRequest) (tg.UploadFileClass, error) {
+		getCalls++
+		if request.Offset != resumeOffset {
+			t.Fatalf("request offset = %d, want %d", request.Offset, resumeOffset)
+		}
+		switch getCalls {
+		case 1:
+			if request.Location != oldLocation {
+				t.Fatalf("first request location = %#v", request.Location)
+			}
+			return nil, tgerr.New(400, tg.ErrFileReferenceExpired)
+		case 2:
+			if request.Location != newLocation {
+				t.Fatalf("second request did not use refreshed location: %#v", request.Location)
+			}
+			return &tg.UploadFile{Bytes: []byte("remaining bytes")}, nil
+		default:
+			t.Fatalf("unexpected getFile call %d", getCalls)
+			return nil, nil
+		}
+	}
+
+	refreshCalls := 0
+	refresh := func(context.Context) (tg.InputFileLocationClass, error) {
+		refreshCalls++
+		return newLocation, nil
+	}
+	var output bytes.Buffer
+	if err := downloadMTProtoFileWithGetter(context.Background(), getFile, oldLocation, resumeOffset, &output, refresh); err != nil {
+		t.Fatalf("downloadMTProtoFileWithGetter returned error: %v", err)
+	}
+	if refreshCalls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refreshCalls)
+	}
+	if got := output.String(); got != "remaining bytes" {
+		t.Fatalf("downloaded bytes = %q", got)
+	}
+}
+
+func TestDownloadMTProtoFileLimitsConsecutiveReferenceRefreshes(t *testing.T) {
+	location := &tg.InputDocumentFileLocation{ID: 99, AccessHash: 100, FileReference: []byte("expired")}
+	getCalls := 0
+	getFile := func(context.Context, *tg.UploadGetFileRequest) (tg.UploadFileClass, error) {
+		getCalls++
+		return nil, tgerr.New(400, tg.ErrFileReferenceExpired)
+	}
+	refreshCalls := 0
+	refresh := func(context.Context) (tg.InputFileLocationClass, error) {
+		refreshCalls++
+		return location, nil
+	}
+
+	err := downloadMTProtoFileWithGetter(context.Background(), getFile, location, 0, io.Discard, refresh)
+	if err == nil || !tgerr.Is(err, tg.ErrFileReferenceExpired) {
+		t.Fatalf("error = %v, want FILE_REFERENCE_EXPIRED", err)
+	}
+	if refreshCalls != maxFileReferenceRefreshAttempts || getCalls != maxFileReferenceRefreshAttempts+1 {
+		t.Fatalf("refresh calls = %d, get calls = %d", refreshCalls, getCalls)
 	}
 }
 

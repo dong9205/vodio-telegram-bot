@@ -46,6 +46,7 @@ const archiveWorkerCount = 2
 const archiveQueueSize = 32
 const downloadProgressInterval = time.Second
 const mtprotoDownloadPartSize = 512 * 1024
+const maxFileReferenceRefreshAttempts = 3
 
 const (
 	mtprotoDataCenterLabel = "DC 2（主连接，媒体自动路由）"
@@ -61,16 +62,17 @@ type mediaGroup struct {
 }
 
 type archiveItem struct {
-	messageID int
-	groupedID int64
-	peerID    int64
-	peerType  string
-	kind      string
-	caption   string
-	fileName  string
-	mimeType  string
-	fileSize  int64
-	location  tg.InputFileLocationClass
+	messageID      int
+	groupedID      int64
+	peerID         int64
+	peerType       string
+	peerAccessHash int64
+	kind           string
+	caption        string
+	fileName       string
+	mimeType       string
+	fileSize       int64
+	location       tg.InputFileLocationClass
 }
 
 type archiveJob struct {
@@ -217,16 +219,17 @@ type persistedArchiveJob struct {
 }
 
 type persistedArchiveItem struct {
-	MessageID int                `json:"message_id"`
-	GroupedID int64              `json:"grouped_id"`
-	PeerID    int64              `json:"peer_id"`
-	PeerType  string             `json:"peer_type"`
-	Kind      string             `json:"kind"`
-	Caption   string             `json:"caption,omitempty"`
-	FileName  string             `json:"file_name,omitempty"`
-	MIMEType  string             `json:"mime_type,omitempty"`
-	FileSize  int64              `json:"file_size"`
-	Location  *persistedLocation `json:"location,omitempty"`
+	MessageID      int                `json:"message_id"`
+	GroupedID      int64              `json:"grouped_id"`
+	PeerID         int64              `json:"peer_id"`
+	PeerType       string             `json:"peer_type"`
+	PeerAccessHash int64              `json:"peer_access_hash,omitempty"`
+	Kind           string             `json:"kind"`
+	Caption        string             `json:"caption,omitempty"`
+	FileName       string             `json:"file_name,omitempty"`
+	MIMEType       string             `json:"mime_type,omitempty"`
+	FileSize       int64              `json:"file_size"`
+	Location       *persistedLocation `json:"location,omitempty"`
 }
 
 type persistedLocation struct {
@@ -272,18 +275,18 @@ func (a *Archiver) Run(ctx context.Context) error {
 	client := gotdtelegram.NewClient(a.cfg.AppID, a.cfg.AppHash, opts)
 	raw := tg.NewClient(client)
 
-	handle := func(ctx context.Context, msgClass tg.MessageClass) error {
+	handle := func(ctx context.Context, entities tg.Entities, msgClass tg.MessageClass) error {
 		msg, ok := msgClass.(*tg.Message)
 		if !ok {
 			return nil
 		}
-		return a.handleMessage(ctx, msg)
+		return a.handleMessageWithEntities(ctx, entities, msg)
 	}
-	dispatcher.OnNewMessage(func(ctx context.Context, _ tg.Entities, update *tg.UpdateNewMessage) error {
-		return handle(ctx, update.Message)
+	dispatcher.OnNewMessage(func(ctx context.Context, entities tg.Entities, update *tg.UpdateNewMessage) error {
+		return handle(ctx, entities, update.Message)
 	})
-	dispatcher.OnNewChannelMessage(func(ctx context.Context, _ tg.Entities, update *tg.UpdateNewChannelMessage) error {
-		return handle(ctx, update.Message)
+	dispatcher.OnNewChannelMessage(func(ctx context.Context, entities tg.Entities, update *tg.UpdateNewChannelMessage) error {
+		return handle(ctx, entities, update.Message)
 	})
 
 	return client.Run(ctx, func(ctx context.Context) error {
@@ -337,6 +340,10 @@ func (a *Archiver) authenticate(ctx context.Context, client *gotdtelegram.Client
 }
 
 func (a *Archiver) handleMessage(ctx context.Context, msg *tg.Message) error {
+	return a.handleMessageWithEntities(ctx, tg.Entities{}, msg)
+}
+
+func (a *Archiver) handleMessageWithEntities(ctx context.Context, entities tg.Entities, msg *tg.Message) error {
 	peerID, peerType := peerInfo(msg.PeerID)
 	if a.cfg.InboxChatID == 0 {
 		a.logger.Info("MTProto discovery message received",
@@ -363,6 +370,13 @@ func (a *Archiver) handleMessage(ctx context.Context, msg *tg.Message) error {
 			"media_type", fmt.Sprintf("%T", msg.Media),
 		)
 		return nil
+	}
+	if item.peerType == "channel" {
+		if channel := entities.Channels[item.peerID]; channel != nil {
+			if accessHash, ok := channel.GetAccessHash(); ok {
+				item.peerAccessHash = accessHash
+			}
+		}
 	}
 	if item.groupedID != 0 {
 		a.enqueueGroup(ctx, item)
@@ -555,16 +569,17 @@ func encodeArchivePayload(items []archiveItem) (json.RawMessage, error) {
 			return nil, err
 		}
 		persisted.Items = append(persisted.Items, persistedArchiveItem{
-			MessageID: item.messageID,
-			GroupedID: item.groupedID,
-			PeerID:    item.peerID,
-			PeerType:  item.peerType,
-			Kind:      item.kind,
-			Caption:   item.caption,
-			FileName:  item.fileName,
-			MIMEType:  item.mimeType,
-			FileSize:  item.fileSize,
-			Location:  location,
+			MessageID:      item.messageID,
+			GroupedID:      item.groupedID,
+			PeerID:         item.peerID,
+			PeerType:       item.peerType,
+			PeerAccessHash: item.peerAccessHash,
+			Kind:           item.kind,
+			Caption:        item.caption,
+			FileName:       item.fileName,
+			MIMEType:       item.mimeType,
+			FileSize:       item.fileSize,
+			Location:       location,
 		})
 	}
 	payload, err := json.Marshal(persisted)
@@ -589,16 +604,17 @@ func decodeArchivePayload(payload json.RawMessage) ([]archiveItem, error) {
 			return nil, err
 		}
 		items = append(items, archiveItem{
-			messageID: item.MessageID,
-			groupedID: item.GroupedID,
-			peerID:    item.PeerID,
-			peerType:  item.PeerType,
-			kind:      item.Kind,
-			caption:   item.Caption,
-			fileName:  item.FileName,
-			mimeType:  item.MIMEType,
-			fileSize:  item.FileSize,
-			location:  location,
+			messageID:      item.MessageID,
+			groupedID:      item.GroupedID,
+			peerID:         item.PeerID,
+			peerType:       item.PeerType,
+			peerAccessHash: item.PeerAccessHash,
+			kind:           item.Kind,
+			caption:        item.Caption,
+			fileName:       item.FileName,
+			mimeType:       item.MIMEType,
+			fileSize:       item.FileSize,
+			location:       location,
 		})
 	}
 	return items, nil
@@ -749,7 +765,27 @@ func (a *Archiver) processArchive(ctx context.Context, raw *tg.Client, job archi
 				if item.fileSize > 0 && offset >= item.fileSize {
 					return nil
 				}
-				return downloadMTProtoFile(ctx, raw, item.location, offset, tracker.wrap(w))
+				return downloadMTProtoFile(
+					ctx,
+					raw,
+					item.location,
+					offset,
+					tracker.wrap(w),
+					func(ctx context.Context) (tg.InputFileLocationClass, error) {
+						location, peerAccessHash, err := a.refreshFileLocation(ctx, raw, item)
+						if err != nil {
+							return nil, err
+						}
+						item.location = location
+						item.peerAccessHash = peerAccessHash
+						a.logger.Info("refreshed expired MTProto file reference",
+							"message_id", item.messageID,
+							"peer_id", item.peerID,
+							"offset", tracker.currentFileBytes,
+						)
+						return location, nil
+					},
+				)
 			},
 		)
 		if !progressStarted {
@@ -813,12 +849,49 @@ func (a *Archiver) processArchive(ctx context.Context, raw *tg.Client, job archi
 	a.notifyDownloadComplete(ctx, job.taskID)
 }
 
-func downloadMTProtoFile(ctx context.Context, raw *tg.Client, location tg.InputFileLocationClass, offset int64, output io.Writer) error {
+type getMTProtoFileFunc func(context.Context, *tg.UploadGetFileRequest) (tg.UploadFileClass, error)
+type refreshMTProtoLocationFunc func(context.Context) (tg.InputFileLocationClass, error)
+
+func downloadMTProtoFile(
+	ctx context.Context,
+	raw *tg.Client,
+	location tg.InputFileLocationClass,
+	offset int64,
+	output io.Writer,
+	refreshLocation refreshMTProtoLocationFunc,
+) error {
+	return downloadMTProtoFileWithGetter(ctx, raw.UploadGetFile, location, offset, output, refreshLocation)
+}
+
+func downloadMTProtoFileWithGetter(
+	ctx context.Context,
+	getFile getMTProtoFileFunc,
+	location tg.InputFileLocationClass,
+	offset int64,
+	output io.Writer,
+	refreshLocation refreshMTProtoLocationFunc,
+) error {
+	consecutiveRefreshes := 0
 	for {
 		request := &tg.UploadGetFileRequest{Offset: offset, Limit: mtprotoDownloadPartSize, Location: location}
 		request.SetPrecise(true)
-		result, err := raw.UploadGetFile(ctx, request)
+		result, err := getFile(ctx, request)
 		if err != nil {
+			if tgerr.Is(err, tg.ErrFileReferenceExpired) && refreshLocation != nil {
+				if consecutiveRefreshes >= maxFileReferenceRefreshAttempts {
+					return fmt.Errorf("refresh file reference at offset %d after %d attempts: %w", offset, consecutiveRefreshes, err)
+				}
+				refreshed, refreshErr := refreshLocation(ctx)
+				if refreshErr != nil {
+					return fmt.Errorf("refresh file reference at offset %d: %w", offset, refreshErr)
+				}
+				if refreshed == nil {
+					return fmt.Errorf("refresh file reference at offset %d returned an empty location", offset)
+				}
+				location = refreshed
+				consecutiveRefreshes++
+				continue
+			}
 			if flood, waitErr := tgerr.FloodWait(ctx, err); waitErr != nil {
 				if flood || tgerr.Is(err, tg.ErrTimeout) {
 					continue
@@ -833,6 +906,7 @@ func downloadMTProtoFile(ctx context.Context, raw *tg.Client, location tg.InputF
 		if len(file.Bytes) == 0 {
 			return nil
 		}
+		consecutiveRefreshes = 0
 		n, err := output.Write(file.Bytes)
 		if err != nil {
 			return fmt.Errorf("write file chunk at offset %d: %w", offset, err)
@@ -844,6 +918,101 @@ func downloadMTProtoFile(ctx context.Context, raw *tg.Client, location tg.InputF
 		if len(file.Bytes) < mtprotoDownloadPartSize {
 			return nil
 		}
+	}
+}
+
+func (a *Archiver) refreshFileLocation(
+	ctx context.Context,
+	raw *tg.Client,
+	item archiveItem,
+) (tg.InputFileLocationClass, int64, error) {
+	msg, peerAccessHash, err := a.fetchArchiveMessage(ctx, raw, item)
+	if err != nil {
+		return nil, peerAccessHash, err
+	}
+	refreshed, ok := a.extractItem(msg)
+	if !ok || refreshed.location == nil {
+		return nil, peerAccessHash, fmt.Errorf("message %d no longer contains supported media", item.messageID)
+	}
+	if !sameMTProtoFile(item.location, refreshed.location) {
+		return nil, peerAccessHash, fmt.Errorf("message %d media changed while refreshing file reference", item.messageID)
+	}
+	return refreshed.location, peerAccessHash, nil
+}
+
+func (a *Archiver) fetchArchiveMessage(ctx context.Context, raw *tg.Client, item archiveItem) (*tg.Message, int64, error) {
+	ids := []tg.InputMessageClass{&tg.InputMessageID{ID: item.messageID}}
+	var (
+		result tg.MessagesMessagesClass
+		err    error
+	)
+	peerAccessHash := item.peerAccessHash
+	switch item.peerType {
+	case "channel":
+		if peerAccessHash == 0 {
+			peerAccessHash, err = resolveChannelAccessHash(ctx, raw, item.peerID)
+			if err != nil {
+				return nil, 0, err
+			}
+		}
+		result, err = raw.ChannelsGetMessages(ctx, &tg.ChannelsGetMessagesRequest{
+			Channel: &tg.InputChannel{ChannelID: item.peerID, AccessHash: peerAccessHash},
+			ID:      ids,
+		})
+	case "chat", "user":
+		result, err = raw.MessagesGetMessages(ctx, ids)
+	default:
+		return nil, peerAccessHash, fmt.Errorf("unsupported peer type %q for file reference refresh", item.peerType)
+	}
+	if err != nil {
+		return nil, peerAccessHash, fmt.Errorf("reload message %d: %w", item.messageID, err)
+	}
+	modified, ok := result.AsModified()
+	if !ok {
+		return nil, peerAccessHash, fmt.Errorf("reload message %d returned %T", item.messageID, result)
+	}
+	for _, message := range modified.GetMessages() {
+		if msg, ok := message.(*tg.Message); ok && msg.ID == item.messageID {
+			return msg, peerAccessHash, nil
+		}
+	}
+	return nil, peerAccessHash, fmt.Errorf("message %d was not found while refreshing file reference", item.messageID)
+}
+
+func resolveChannelAccessHash(ctx context.Context, raw *tg.Client, channelID int64) (int64, error) {
+	result, err := raw.MessagesGetDialogs(ctx, &tg.MessagesGetDialogsRequest{
+		OffsetPeer: &tg.InputPeerEmpty{},
+		Limit:      100,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("load dialogs for channel %d: %w", channelID, err)
+	}
+	modified, ok := result.AsModified()
+	if !ok {
+		return 0, fmt.Errorf("load dialogs for channel %d returned %T", channelID, result)
+	}
+	for _, chat := range modified.GetChats() {
+		channel, ok := chat.(*tg.Channel)
+		if !ok || channel.ID != channelID {
+			continue
+		}
+		if accessHash, ok := channel.GetAccessHash(); ok && accessHash != 0 {
+			return accessHash, nil
+		}
+	}
+	return 0, fmt.Errorf("channel %d access hash was not found in recent dialogs", channelID)
+}
+
+func sameMTProtoFile(left, right tg.InputFileLocationClass) bool {
+	switch left := left.(type) {
+	case *tg.InputDocumentFileLocation:
+		right, ok := right.(*tg.InputDocumentFileLocation)
+		return ok && left.ID == right.ID
+	case *tg.InputPhotoFileLocation:
+		right, ok := right.(*tg.InputPhotoFileLocation)
+		return ok && left.ID == right.ID
+	default:
+		return false
 	}
 }
 
